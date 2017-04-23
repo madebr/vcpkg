@@ -40,7 +40,7 @@ namespace vcpkg
 
     static Optional<fs::path> find_if_has_equal_or_greater_version(const std::vector<fs::path>& candidate_paths, const std::wstring& version_check_arguments, const std::array<int, 3>& expected_version)
     {
-        auto it = std::find_if(candidate_paths.cbegin(), candidate_paths.cend(), [&](const fs::path& p)
+        auto it = Util::find_if(candidate_paths, [&](const fs::path& p)
                                {
                                    const std::wstring cmd = Strings::wformat(LR"("%s" %s)", p.native(), version_check_arguments);
                                    return exists_and_has_equal_or_greater_version(cmd, expected_version);
@@ -90,7 +90,7 @@ namespace vcpkg
         static constexpr std::array<int, 3> expected_version = { 3,8,0 };
         static const std::wstring version_check_arguments = L"--version";
 
-        const fs::path downloaded_copy = downloads_folder / "cmake-3.8.0-rc1-win32-x86" / "bin" / "cmake.exe";
+        const fs::path downloaded_copy = downloads_folder / "cmake-3.8.0-win32-x86" / "bin" / "cmake.exe";
         const std::vector<fs::path> from_path = find_from_PATH(L"cmake");
 
         std::vector<fs::path> candidate_paths;
@@ -155,7 +155,7 @@ namespace vcpkg
     Expected<VcpkgPaths> VcpkgPaths::create(const fs::path& vcpkg_root_dir)
     {
         std::error_code ec;
-        const fs::path canonical_vcpkg_root_dir = fs::canonical(vcpkg_root_dir, ec);
+        const fs::path canonical_vcpkg_root_dir = fs::stdfs::canonical(vcpkg_root_dir, ec);
         if (ec)
         {
             return ec;
@@ -213,10 +213,9 @@ namespace vcpkg
 
     bool VcpkgPaths::is_valid_triplet(const Triplet& t) const
     {
-        auto it = fs::directory_iterator(this->triplets);
-        for (; it != fs::directory_iterator(); ++it)
+        for (auto&& path : get_filesystem().get_files_non_recursive(this->triplets))
         {
-            std::string triplet_file_name = it->path().stem().generic_u8string();
+            std::string triplet_file_name = path.stem().generic_u8string();
             if (t.canonical_name() == triplet_file_name) // TODO: fuzzy compare
             {
                 //t.value = triplet_file_name; // NOTE: uncomment when implementing fuzzy compare
@@ -264,6 +263,8 @@ namespace vcpkg
 
     static Toolset find_toolset_instance(const VcpkgPaths& paths)
     {
+        const auto& fs = paths.get_filesystem();
+
         const std::vector<std::string> vs2017_installation_instances = get_VS2017_installation_instances(paths);
         // Note: this will contain a mix of vcvarsall.bat locations and dumpbin.exe locations.
         std::vector<fs::path> paths_examined;
@@ -276,16 +277,15 @@ namespace vcpkg
             // Skip any instances that do not have vcvarsall.
             const fs::path vcvarsall_bat = vc_dir / "Auxiliary" / "Build" / "vcvarsall.bat";
             paths_examined.push_back(vcvarsall_bat);
-            if (!fs::exists(vcvarsall_bat))
+            if (!fs.exists(vcvarsall_bat))
                 continue;
 
             // Locate the "best" MSVC toolchain version
             const fs::path msvc_path = vc_dir / "Tools" / "MSVC";
-            std::vector<fs::path> msvc_subdirectories;
-            Files::non_recursive_find_matching_paths_in_dir(msvc_path, [](const fs::path& current)
-                                                            {
-                                                                return fs::is_directory(current);
-                                                            }, &msvc_subdirectories);
+            std::vector<fs::path> msvc_subdirectories = fs.get_files_non_recursive(msvc_path);
+            Util::unstable_keep_if(msvc_subdirectories, [&fs](const fs::path& path) {
+                return fs.is_directory(path);
+            });
 
             // Sort them so that latest comes first
             std::sort(msvc_subdirectories.begin(), msvc_subdirectories.end(), [](const fs::path& left, const fs::path& right)
@@ -297,7 +297,7 @@ namespace vcpkg
             {
                 const fs::path dumpbin_path = subdir / "bin" / "HostX86" / "x86" / "dumpbin.exe";
                 paths_examined.push_back(dumpbin_path);
-                if (fs::exists(dumpbin_path))
+                if (fs.exists(dumpbin_path))
                 {
                     return { dumpbin_path, vcvarsall_bat , L"v141" };
                 }
@@ -311,11 +311,11 @@ namespace vcpkg
             const fs::path vs2015_vcvarsall_bat = *v / "VC" / "vcvarsall.bat";
 
             paths_examined.push_back(vs2015_vcvarsall_bat);
-            if (fs::exists(vs2015_vcvarsall_bat))
+            if (fs.exists(vs2015_vcvarsall_bat))
             {
                 const fs::path vs2015_dumpbin_exe = *v / "VC" / "bin" / "dumpbin.exe";
                 paths_examined.push_back(vs2015_dumpbin_exe);
-                if (fs::exists(vs2015_dumpbin_exe))
+                if (fs.exists(vs2015_dumpbin_exe))
                 {
                     return { vs2015_dumpbin_exe, vs2015_vcvarsall_bat, L"v140" };
                 }
@@ -334,5 +334,9 @@ namespace vcpkg
     const Toolset& VcpkgPaths::get_toolset() const
     {
         return this->toolset.get_lazy([this]() { return find_toolset_instance(*this); });
+    }
+    Files::Filesystem & VcpkgPaths::get_filesystem() const
+    {
+        return Files::get_real_filesystem();
     }
 }

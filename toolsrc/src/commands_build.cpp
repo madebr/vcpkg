@@ -10,10 +10,11 @@
 #include "metrics.h"
 #include "vcpkg_Enums.h"
 #include "Paragraphs.h"
+#include "vcpkg_Util.h"
 
 namespace vcpkg::Commands::Build
 {
-    using Dependencies::PackageSpecWithInstallPlan;
+    using Dependencies::InstallPlanAction;
     using Dependencies::InstallPlanType;
 
     static const std::string OPTION_CHECKS_ONLY = "--checks-only";
@@ -22,7 +23,7 @@ namespace vcpkg::Commands::Build
     {
         const BinaryParagraph bpgh = BinaryParagraph(source_paragraph, triplet);
         const fs::path binary_control_file = paths.packages / bpgh.dir() / "CONTROL";
-        std::ofstream(binary_control_file) << bpgh;
+        paths.get_filesystem().write_contents(binary_control_file, Strings::serialize(bpgh));
     }
 
     std::wstring make_build_env_cmd(const Triplet& triplet, const Toolset& toolset)
@@ -36,16 +37,29 @@ namespace vcpkg::Commands::Build
         return Strings::wformat(LR"("%s" %s %s 2>&1)", toolset.vcvarsall.native(), Strings::utf8_to_utf16(triplet.architecture()), tonull);
     }
 
-    BuildResult build_package(const SourceParagraph& source_paragraph, const PackageSpec& spec, const VcpkgPaths& paths, const fs::path& port_dir, const StatusParagraphs& status_db)
+    ExtendedBuildResult build_package(
+        const SourceParagraph& source_paragraph,
+        const PackageSpec& spec,
+        const VcpkgPaths& paths,
+        const fs::path& port_dir,
+        const StatusParagraphs& status_db)
     {
         Checks::check_exit(VCPKG_LINE_INFO, spec.name() == source_paragraph.name, "inconsistent arguments to build_package()");
 
         const Triplet& triplet = spec.triplet();
-        for (auto&& dep : filter_dependencies(source_paragraph.depends, triplet))
         {
-            if (status_db.find_installed(dep, triplet) == status_db.end())
+            std::vector<PackageSpec> missing_specs;
+            for (auto&& dep : filter_dependencies(source_paragraph.depends, triplet))
             {
-                return BuildResult::CASCADED_DUE_TO_MISSING_DEPENDENCIES;
+                if (status_db.find_installed(dep, triplet) == status_db.end())
+                {
+                    missing_specs.push_back(PackageSpec::from_name_and_triplet(dep, triplet).value_or_exit(VCPKG_LINE_INFO));
+                }
+            }
+            // Fail the build if any dependencies were missing
+            if (!missing_specs.empty())
+            {
+                return { BuildResult::CASCADED_DUE_TO_MISSING_DEPENDENCIES, std::move(missing_specs) };
             }
         }
 
@@ -78,14 +92,14 @@ namespace vcpkg::Commands::Build
         {
             Metrics::track_property("error", "build failed");
             Metrics::track_property("build_error", spec.to_string());
-            return BuildResult::BUILD_FAILED;
+            return { BuildResult::BUILD_FAILED, {} };
         }
 
         const size_t error_count = PostBuildLint::perform_all_checks(spec, paths);
 
         if (error_count != 0)
         {
-            return BuildResult::POST_BUILD_CHECKS_FAILED;
+            return { BuildResult::POST_BUILD_CHECKS_FAILED, {} };
         }
 
         create_binary_control_file(paths, source_paragraph, triplet);
@@ -93,7 +107,7 @@ namespace vcpkg::Commands::Build
         // const fs::path port_buildtrees_dir = paths.buildtrees / spec.name;
         // delete_directory(port_buildtrees_dir);
 
-        return BuildResult::SUCCEEDED;
+        return { BuildResult::SUCCEEDED, {} };
     }
 
     const std::string& to_string(const BuildResult build_result)
@@ -140,37 +154,28 @@ namespace vcpkg::Commands::Build
             Checks::exit_success(VCPKG_LINE_INFO);
         }
 
-        const Expected<SourceParagraph> maybe_spgh = Paragraphs::try_load_port(port_dir);
+        const Expected<SourceParagraph> maybe_spgh = Paragraphs::try_load_port(paths.get_filesystem(), port_dir);
         Checks::check_exit(VCPKG_LINE_INFO, !maybe_spgh.error_code(), "Could not find package named %s: %s", spec, maybe_spgh.error_code().message());
         const SourceParagraph& spgh = *maybe_spgh.get();
 
         StatusParagraphs status_db = database_load_check(paths);
-        const BuildResult result = build_package(spgh, spec, paths, paths.port_dir(spec), status_db);
-        if (result == BuildResult::CASCADED_DUE_TO_MISSING_DEPENDENCIES)
+        const auto result = build_package(spgh, spec, paths, paths.port_dir(spec), status_db);
+        if (result.code == BuildResult::CASCADED_DUE_TO_MISSING_DEPENDENCIES)
         {
-            std::vector<PackageSpecWithInstallPlan> unmet_dependencies = Dependencies::create_install_plan(paths, { spec }, status_db);
-            unmet_dependencies.erase(
-                std::remove_if(unmet_dependencies.begin(), unmet_dependencies.end(), [&spec](const PackageSpecWithInstallPlan& p)
-                               {
-                                   return (p.spec == spec) || (p.plan.plan_type == InstallPlanType::ALREADY_INSTALLED);
-                               }),
-                unmet_dependencies.end());
-
-            Checks::check_exit(VCPKG_LINE_INFO, !unmet_dependencies.empty());
             System::println(System::Color::error, "The build command requires all dependencies to be already installed.");
             System::println("The following dependencies are missing:");
             System::println("");
-            for (const PackageSpecWithInstallPlan& p : unmet_dependencies)
+            for (const auto& p : result.unmet_dependencies)
             {
-                System::println("    %s", p.spec);
+                System::println("    %s", p);
             }
             System::println("");
             Checks::exit_fail(VCPKG_LINE_INFO);
         }
 
-        if (result != BuildResult::SUCCEEDED)
+        if (result.code != BuildResult::SUCCEEDED)
         {
-            System::println(System::Color::error, Build::create_error_message(result, spec));
+            System::println(System::Color::error, Build::create_error_message(result.code, spec));
             System::println(Build::create_user_troubleshooting_message(spec));
             Checks::exit_fail(VCPKG_LINE_INFO);
         }

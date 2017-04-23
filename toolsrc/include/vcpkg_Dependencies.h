@@ -16,6 +16,15 @@ namespace vcpkg::Dependencies
 
     std::string to_output_string(RequestType request_type, const CStringView s);
 
+    struct AnyParagraph
+    {
+        std::vector<PackageSpec> dependencies(const Triplet& triplet) const;
+
+        Optional<StatusParagraph> status_paragraph;
+        Optional<BinaryParagraph> binary_paragraph;
+        Optional<SourceParagraph> source_paragraph;
+    };
+
     enum class InstallPlanType
     {
         UNKNOWN,
@@ -26,27 +35,19 @@ namespace vcpkg::Dependencies
 
     struct InstallPlanAction
     {
+        static bool compare_by_name(const InstallPlanAction* left, const InstallPlanAction* right);
+
         InstallPlanAction();
-        InstallPlanAction(const InstallPlanType& plan_type, const RequestType& request_type, Optional<BinaryParagraph> binary_pgh, Optional<SourceParagraph> source_pgh);
+        InstallPlanAction(const PackageSpec& spec, const AnyParagraph& any_paragraph, const RequestType& request_type);
         InstallPlanAction(const InstallPlanAction&) = delete;
         InstallPlanAction(InstallPlanAction&&) = default;
         InstallPlanAction& operator=(const InstallPlanAction&) = delete;
         InstallPlanAction& operator=(InstallPlanAction&&) = default;
 
+        PackageSpec spec;
+        AnyParagraph any_paragraph;
         InstallPlanType plan_type;
         RequestType request_type;
-        Optional<BinaryParagraph> binary_pgh;
-        Optional<SourceParagraph> source_pgh;
-    };
-
-    struct PackageSpecWithInstallPlan
-    {
-        static bool compare_by_name(const PackageSpecWithInstallPlan* left, const PackageSpecWithInstallPlan* right);
-
-        PackageSpecWithInstallPlan(const PackageSpec& spec, InstallPlanAction&& plan);
-
-        PackageSpec spec;
-        InstallPlanAction plan;
     };
 
     enum class RemovePlanType
@@ -58,28 +59,47 @@ namespace vcpkg::Dependencies
 
     struct RemovePlanAction
     {
+        static bool compare_by_name(const RemovePlanAction* left, const RemovePlanAction* right);
+
         RemovePlanAction();
-        RemovePlanAction(const RemovePlanType& plan_type, const RequestType& request_type);
+        RemovePlanAction(const PackageSpec& spec, const RemovePlanType& plan_type, const RequestType& request_type);
         RemovePlanAction(const RemovePlanAction&) = delete;
         RemovePlanAction(RemovePlanAction&&) = default;
         RemovePlanAction& operator=(const RemovePlanAction&) = delete;
         RemovePlanAction& operator=(RemovePlanAction&&) = default;
 
+        PackageSpec spec;
         RemovePlanType plan_type;
         RequestType request_type;
     };
 
-    struct PackageSpecWithRemovePlan
+    enum class ExportPlanType
     {
-        static bool compare_by_name(const PackageSpecWithRemovePlan* left, const PackageSpecWithRemovePlan* right);
-
-        PackageSpecWithRemovePlan(const PackageSpec& spec, RemovePlanAction&& plan);
-
-        PackageSpec spec;
-        RemovePlanAction plan;
+        UNKNOWN,
+        PORT_AVAILABLE_BUT_NOT_BUILT,
+        ALREADY_BUILT
     };
 
-    std::vector<PackageSpecWithInstallPlan> create_install_plan(const VcpkgPaths& paths, const std::vector<PackageSpec>& specs, const StatusParagraphs& status_db);
+    struct ExportPlanAction
+    {
+        static bool compare_by_name(const ExportPlanAction* left, const ExportPlanAction* right);
 
-    std::vector<PackageSpecWithRemovePlan> create_remove_plan(const std::vector<PackageSpec>& specs, const StatusParagraphs& status_db);
+        ExportPlanAction();
+        ExportPlanAction(const PackageSpec& spec, const AnyParagraph& any_paragraph, const RequestType& request_type);
+        ExportPlanAction(const ExportPlanAction&) = delete;
+        ExportPlanAction(ExportPlanAction&&) = default;
+        ExportPlanAction& operator=(const ExportPlanAction&) = delete;
+        ExportPlanAction& operator=(ExportPlanAction&&) = default;
+
+        PackageSpec spec;
+        AnyParagraph any_paragraph;
+        ExportPlanType plan_type;
+        RequestType request_type;
+    };
+
+    std::vector<InstallPlanAction> create_install_plan(const VcpkgPaths& paths, const std::vector<PackageSpec>& specs, const StatusParagraphs& status_db);
+
+    std::vector<RemovePlanAction> create_remove_plan(const std::vector<PackageSpec>& specs, const StatusParagraphs& status_db);
+
+    std::vector<ExportPlanAction> create_export_plan(const VcpkgPaths& paths, const std::vector<PackageSpec>& specs, const StatusParagraphs& status_db);
 }

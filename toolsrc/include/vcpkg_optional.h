@@ -1,5 +1,4 @@
 #pragma once
-#include "LineInfo.h"
 #include "vcpkg_Checks.h"
 
 namespace vcpkg
@@ -15,6 +14,8 @@ namespace vcpkg
     class Optional
     {
     public:
+        constexpr Optional() : m_is_present(false), m_t() { }
+
         // Constructors are intentionally implicit
         constexpr Optional(NullOpt) : m_is_present(false), m_t() { }
 
